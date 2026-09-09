@@ -1,66 +1,55 @@
 name: release
 
-on:
+"on":
   push:
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag da release (ex: v1.0.0)'
+        description: "Tag da release (ex: v1.0.0)"
         required: false
-        default: ''
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Set up uv + Python
-        uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install
-        run: uv sync
-
-      - name: Validate canonical (writes worklists)
-        run: uv run biblias validate || true
-
-      - name: Build every version (zefania, sqlite, json)
+      - name: Determine Release Tag
+        id: vars
         run: |
-          mkdir -p dist
-          shopt -s nullglob
-          for dir in data/canonical/*/; do
-            code="$(basename "$dir")"
-            uv run biblias build "$code" --format zefania,sqlite,json --out dist
-          done
+          TAG="${{ inputs.tag_name }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.ref_name }}"
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ] || [ "$TAG" = "master" ]; then
+            TAG="v1.0"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Package
+      - name: Compress databases and generate manifest
+        env:
+          RELEASE_TAG: ${{ steps.vars.outputs.tag }}
         run: |
-          cd dist
-          shopt -s nullglob
-          # Per-version bundle: the three formats together.
-          for xml in *.xml; do
-            code="${xml%.xml}"
-            zip -q "${code}.zip" "${code}.xml" "${code}.sqlite" "${code}.json"
-          done
-          # Per-target bundles across all versions.
-          zip -q biblias-sqlite.zip *.sqlite 2>/dev/null || true
-          zip -q biblias-zefania.zip *.xml 2>/dev/null || true
+          python scripts/compress_and_manifest.py --tag "${{ steps.vars.outputs.tag }}"
 
-      - name: Upload to Release
+      - name: Create or update Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag_name || github.ref_name }}
-          name: Release ${{ inputs.tag_name || github.ref_name }}
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: Release ${{ steps.vars.outputs.tag }}
           files: |
-            dist/*.xml
-            dist/*.sqlite
-            dist/*.json
-            dist/*.zip
-          fail_on_unmatched_files: false
+            dist/*.sqlite.gz
+            dist/manifest.json
+          fail_on_unmatched_files: true
